@@ -1,27 +1,35 @@
 import assert from "node:assert/strict";
-import { access } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 async function render() {
-  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
-  workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}`);
-  const { default: worker } = await import(workerUrl.href);
-
-  return worker.fetch(
-    new Request("http://localhost/", { headers: { accept: "text/html" } }),
-    {
-      ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) },
-    },
-    { waitUntil() {}, passThroughOnException() {} },
+  const { startProdServer } = await import(
+    "../node_modules/vinext/dist/server/prod-server.js"
   );
+  const { server, port } = await startProdServer({
+    host: "127.0.0.1",
+    port: 0,
+    outDir: fileURLToPath(new URL("../dist", import.meta.url)),
+  });
+
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/`, {
+      headers: { accept: "text/html" },
+    });
+    return { response, html: await response.text() };
+  } finally {
+    await new Promise((resolve, reject) => {
+      server.close((error) => (error ? reject(error) : resolve()));
+    });
+  }
 }
 
 test("server-renders the finished SEALFORM product shell", async () => {
-  const response = await render();
+  const { response, html } = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
-  const html = await response.text();
   assert.match(html, /<title>SEALFORM — Domain Hand-Sign Trainer<\/title>/i);
   assert.match(html, /Master the gesture\. Hold the form\./i);
   assert.match(html, /Domain hand-sign lab/i);
@@ -42,5 +50,24 @@ test("ships local hand-tracking assets and sourced reference images", async () =
 
   for (const path of expected) {
     await assert.doesNotReject(access(new URL(path, import.meta.url)), `${path} should exist`);
+  }
+});
+
+test("does not ship ChatGPT Sites starter files", async () => {
+  const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+  assert.equal(pkg.name, "sealform-jjk-trainer");
+
+  const gone = [
+    "../app/chatgpt-auth.ts",
+    "../examples/d1",
+    "../.openai/hosting.json",
+    "../db/schema.ts",
+    "../drizzle.config.ts",
+    "../build/sites-vite-plugin.ts",
+    "../worker/index.ts",
+  ];
+
+  for (const path of gone) {
+    await assert.rejects(access(new URL(path, import.meta.url)), `${path} should be gone`);
   }
 });
